@@ -1,7 +1,7 @@
 <?php
 
 /*
- * Hello! This is a demo implementation for ShortPixel's POST-REDUCER API.
+ * This is a demo implementation for ShortPixel's POST-REDUCER API.
  * See more info about POST-REDUCER API at shortpixel.com/api-docs.
  *
  * # What to know?
@@ -65,441 +65,378 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *   description = @Translation("Uses the ShortPixel service to optimize images.")
  * )
  */
-class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase
-{
-    /**
-     * The file system.
-     *
-     * @var \Drupal\Core\File\FileSystemInterface
-     */
-    protected $fileSystem;
+class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
 
-    /**
-     * The HTTP client.
-     *
-     * @var \GuzzleHttp\ClientInterface
-     */
-    protected $httpClient;
+  /**
+   * The file system.
+   *
+   * @var \Drupal\Core\File\FileSystemInterface
+   */
+  protected $fileSystem;
 
-    /**
-     * {@inheritdoc}
-     */
-    public function __construct(
-        array $configuration,
-        $plugin_id,
-        $plugin_definition,
-        LoggerInterface $logger,
-        ImageFactory $image_factory,
-        FileSystemInterface $file_system,
-        ClientInterface $http_client
-    ) {
-        parent::__construct(
-            $configuration,
-            $plugin_id,
-            $plugin_definition,
-            $logger,
-            $image_factory
-        );
-        $this->fileSystem = $file_system;
-        $this->httpClient = $http_client;
+  /**
+   * The HTTP client.
+   *
+   * @var \GuzzleHttp\ClientInterface
+   */
+  protected $httpClient;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function __construct(
+    array $configuration,
+    $plugin_id,
+    $plugin_definition,
+    LoggerInterface $logger,
+    ImageFactory $image_factory,
+    FileSystemInterface $file_system,
+    ClientInterface $http_client
+  ) {
+    parent::__construct($configuration, $plugin_id, $plugin_definition, $logger, $image_factory);
+    $this->fileSystem = $file_system;
+    $this->httpClient = $http_client;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
+    return new static(
+      $configuration,
+      $plugin_id,
+      $plugin_definition,
+      $container->get('logger.factory')->get('imageapi_optimize'),
+      $container->get('image.factory'),
+      $container->get('file_system'),
+      $container->get('http_client')
+    );
+  }
+
+  /**
+   * Maps compression_type to ShortPixel "lossy" parameter:
+   *   1 = lossy, 2 = glossy, 0 = lossless.
+   */
+  protected function getLossyValue(): int {
+    return match ($this->configuration['compression_type'] ?? 'glossy') {
+      'lossless' => 0,
+      'lossy' => 1,
+      'glossy' => 2,
+      default => 2,
+    };
+  }
+
+  /**
+   * Pick the correct download URL field based on compression_type.
+   */
+  protected function getDownloadUrlFromMeta(array $meta): string {
+	  $candidates = [
+		  // AVIF (preferat)
+		  $meta['AVIFLossyURL'] ?? '',
+		  $meta['AVIFLosslessURL'] ?? '',
+
+		  // WebP fallback
+		  $meta['WebPLossyURL'] ?? '',
+		  $meta['WebPLosslessURL'] ?? '',
+
+		  // Original optimized
+		  $meta['LossyURL'] ?? '',
+		  $meta['LosslessURL'] ?? '',
+	  ];
+
+	  foreach ($candidates as $url) {
+		  if (!empty($url) && $url !== 'NA') {
+			  return (string) $url;
+		  }
+	  }
+
+	  return '';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function applyToImage($image_uri) {
+    $apiKey = $this->configuration['api_key'] ?? NULL;
+
+    if (empty($apiKey)) {
+      $this->logger->error('ShortPixel: Missing API key.');
+      return TRUE;
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public static function create(
-        ContainerInterface $container,
-        array $configuration,
-        $plugin_id,
-        $plugin_definition
-    ) {
-        return new static(
-            $configuration,
-            $plugin_id,
-            $plugin_definition,
-            $container->get("logger.factory")->get("imageapi_optimize"),
-            $container->get("image.factory"),
-            $container->get("file_system"),
-            $container->get("http_client")
-        );
+    // Convert stream wrapper URI (public://...) to real filesystem path.
+    $realPath = $this->fileSystem->realpath($image_uri);
+    if (!$realPath || !is_file($realPath) || !is_readable($realPath)) {
+      $this->logger->error('ShortPixel: File not found or not readable: @uri (@path)', [
+        '@uri' => $image_uri,
+        '@path' => (string) $realPath,
+      ]);
+      // Return TRUE to let Drupal continue with the original generated file.
+      return TRUE;
     }
 
-    /**
-     * Maps compression_type to ShortPixel "lossy" parameter:
-     *   1 = lossy, 2 = glossy, 0 = lossless.
-     */
-    protected function getLossyValue(): int
-    {
-        return match ($this->configuration["compression_type"] ?? "glossy") {
-            "lossless" => 0,
-            "lossy" => 1,
-            "glossy" => 2,
-            default => 2,
-        };
-    }
+    $beforeSize = @filesize($realPath) ?: 0;
+    $this->logger->notice('ShortPixel START uri=@uri path=@path size=@size mode=@mode', [
+      '@uri' => $image_uri,
+      '@path' => $realPath,
+      '@size' => $beforeSize,
+      '@mode' => (string) ($this->configuration['compression_type'] ?? 'glossy'),
+    ]);
 
-    /**
-     * Pick the correct download URL field based on compression_type.
-     */
-    protected function getDownloadUrlFromMeta(array $meta): string
-    {
-        $candidates = [
-            // AVIF (preferat)
-            $meta["AVIFLossyURL"] ?? "",
-            $meta["AVIFLosslessURL"] ?? "",
+    try {
+      // 1) Upload via Post-Reducer.
+      $meta = $this->callPostReducer($apiKey, $realPath);
 
-            // WebP fallback
-            $meta["WebPLossyURL"] ?? "",
-            $meta["WebPLosslessURL"] ?? "",
+      $code = (int) ($meta['Status']['Code'] ?? 0);
+      $msg = (string) ($meta['Status']['Message'] ?? '');
 
-            // Original optimized
-            $meta["LossyURL"] ?? "",
-            $meta["LosslessURL"] ?? "",
-        ];
-
-        foreach ($candidates as $url) {
-            if (!empty($url) && $url !== "NA") {
-                return (string) $url;
-            }
+      // 2) If pending, poll reducer.php using OriginalURL (no re-upload).
+      if ($code === 1 && !empty($meta['OriginalURL'])) {
+        for ($i = 0; $i < 3 && $code === 1; $i++) {
+          sleep(2);
+          $meta = $this->callReducerByOriginalUrl($apiKey, (string) $meta['OriginalURL']);
+          $code = (int) ($meta['Status']['Code'] ?? 0);
+          $msg = (string) ($meta['Status']['Message'] ?? $msg);
         }
+      }
 
-        return "";
+      if ($code !== 2) {
+        $this->logger->error('ShortPixel: Optimization failed or not ready. Code: @code Message: @msg File: @path', [
+          '@code' => $code,
+          '@msg' => $msg,
+          '@path' => $realPath,
+        ]);
+        return TRUE;
+      }
+
+      // 3) Download optimized image (based on configured compression type) and overwrite local file.
+      $downloadUrl = $this->getDownloadUrlFromMeta($meta);
+      $this->logger->notice('ShortPixel: Selected optimized URL: @url', [
+		      '@url' => $downloadUrl,
+      ]);
+      if ($downloadUrl === '' || $downloadUrl === 'NA') {
+        $this->logger->error('ShortPixel: Missing optimized URL for selected mode. File: @path Mode: @mode', [
+          '@path' => $realPath,
+          '@mode' => (string) ($this->configuration['compression_type'] ?? 'glossy'),
+        ]);
+        return TRUE;
+      }
+
+      $optimizedResponse = $this->httpClient->request('GET', $downloadUrl, [
+        'timeout' => 60,
+      ]);
+
+      $optimizedImage = (string) $optimizedResponse->getBody();
+      if ($optimizedImage === '') {
+        $this->logger->error('ShortPixel: Downloaded optimized content is empty for @path', ['@path' => $realPath]);
+        return TRUE;
+      }
+
+	// Write optimized image to a temp file first.
+$tempUri = 'temporary://shortpixel_' . uniqid() . '_' . basename($image_uri);
+
+if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::EXISTS_REPLACE)) {
+	// Now safely replace the styled image.
+	$this->fileSystem->copy($tempUri, $image_uri, FileSystemInterface::EXISTS_REPLACE);
+	$this->fileSystem->delete($tempUri);
+
+	$afterPath = $this->fileSystem->realpath($image_uri) ?: $realPath;
+	$afterSize = @filesize($afterPath) ?: 0;
+
+	$this->logger->notice('ShortPixel DONE uri=@uri size_before=@b size_after=@a url=@u', [
+			'@uri' => $image_uri,
+			'@b' => $beforeSize,
+			'@a' => $afterSize,
+			'@u' => $downloadUrl,
+	]);
+
+	return TRUE;
+}
+
+
+      $this->logger->error('ShortPixel: Failed to save optimized image back to @uri', ['@uri' => $image_uri]);
+    }
+    catch (\Throwable $e) {
+      $this->logger->error('ShortPixel: Exception while optimizing "@uri": @err', [
+        '@uri' => $image_uri,
+        '@err' => $e->getMessage(),
+      ]);
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function applyToImage($image_uri)
-    {
-        $apiKey = $this->configuration["api_key"] ?? null;
+    return TRUE;
+  }
 
-        if (empty($apiKey)) {
-            $this->logger->error("ShortPixel: Missing API key.");
-            return true;
-        }
+  /**
+   * Call ShortPixel Post-Reducer API (uploads the file).
+   *
+   * @return array
+   *   First metadata item.
+   */
+  protected function callPostReducer(string $apiKey, string $realPath): array {
+    $fileField = 'file1';
 
-        // Convert stream wrapper URI (public://...) to real filesystem path.
-        $realPath = $this->fileSystem->realpath($image_uri);
-        if (!$realPath || !is_file($realPath) || !is_readable($realPath)) {
-            $this->logger->error(
-                "ShortPixel: File not found or not readable: @uri (@path)",
-                [
-                    "@uri" => $image_uri,
-                    "@path" => (string) $realPath,
-                ]
-            );
-            // Return TRUE to let Drupal continue with the original generated file.
-            return true;
-        }
+    $response = $this->httpClient->request('POST', 'https://api.shortpixel.com/v2/post-reducer.php', [
+      'multipart' => [
+        [
+          'name' => 'key',
+          'contents' => $apiKey,
+        ],
+        [
+          'name' => 'plugin_version',
+          'contents' => 'DRP01', // max 5 chars
+        ],
+        [
+          'name' => 'lossy',
+          'contents' => (string) $this->getLossyValue(), // 1 lossy, 2 glossy, 0 lossless
+        ],
+        [
+          'name' => 'wait',
+          'contents' => '30',
+        ],
+	[
+	'name' => 'convertto',
+	'contents' => '+avif|+webp',
+	],
+        [
+          'name' => 'refresh',
+          'contents' => '0',
+        ],
+        [
+          // Must be JSON with double quotes.
+          'name' => 'file_paths',
+          'contents' => json_encode([$fileField => $realPath], JSON_UNESCAPED_SLASHES),
+        ],
+        [
+          'name' => $fileField,
+          'contents' => fopen($realPath, 'rb'),
+          'filename' => basename($realPath),
+        ],
+      ],
+      'headers' => [
+        'Accept' => 'application/json',
+      ],
+      'timeout' => 60,
+    ]);
 
-        $beforeSize = @filesize($realPath) ?: 0;
-        $this->logger->notice(
-            "ShortPixel START uri=@uri path=@path size=@size mode=@mode",
-            [
-                "@uri" => $image_uri,
-                "@path" => $realPath,
-                "@size" => $beforeSize,
-                "@mode" =>
-                    (string) ($this->configuration["compression_type"] ??
-                        "glossy"),
-            ]
-        );
+    $result = json_decode((string) $response->getBody(), TRUE);
 
-        try {
-            // 1) Upload via Post-Reducer.
-            $meta = $this->callPostReducer($apiKey, $realPath);
-
-            $code = (int) ($meta["Status"]["Code"] ?? 0);
-            $msg = (string) ($meta["Status"]["Message"] ?? "");
-
-            // 2) If pending, poll reducer.php using OriginalURL (no re-upload).
-            if ($code === 1 && !empty($meta["OriginalURL"])) {
-                for ($i = 0; $i < 3 && $code === 1; $i++) {
-                    sleep(2);
-                    $meta = $this->callReducerByOriginalUrl(
-                        $apiKey,
-                        (string) $meta["OriginalURL"]
-                    );
-                    $code = (int) ($meta["Status"]["Code"] ?? 0);
-                    $msg = (string) ($meta["Status"]["Message"] ?? $msg);
-                }
-            }
-
-            if ($code !== 2) {
-                $this->logger->error(
-                    "ShortPixel: Optimization failed or not ready. Code: @code Message: @msg File: @path",
-                    [
-                        "@code" => $code,
-                        "@msg" => $msg,
-                        "@path" => $realPath,
-                    ]
-                );
-                return true;
-            }
-
-            // 3) Download optimized image (based on configured compression type) and overwrite local file.
-            $downloadUrl = $this->getDownloadUrlFromMeta($meta);
-            $this->logger->notice("ShortPixel: Selected optimized URL: @url", [
-                "@url" => $downloadUrl,
-            ]);
-            if ($downloadUrl === "" || $downloadUrl === "NA") {
-                $this->logger->error(
-                    "ShortPixel: Missing optimized URL for selected mode. File: @path Mode: @mode",
-                    [
-                        "@path" => $realPath,
-                        "@mode" =>
-                            (string) ($this->configuration[
-                                "compression_type"
-                            ] ?? "glossy"),
-                    ]
-                );
-                return true;
-            }
-
-            $optimizedResponse = $this->httpClient->request(
-                "GET",
-                $downloadUrl,
-                [
-                    "timeout" => 60,
-                ]
-            );
-
-            $optimizedImage = (string) $optimizedResponse->getBody();
-            if ($optimizedImage === "") {
-                $this->logger->error(
-                    "ShortPixel: Downloaded optimized content is empty for @path",
-                    ["@path" => $realPath]
-                );
-                return true;
-            }
-
-            // Write optimized image to a temp file first.
-            $tempUri =
-                "temporary://shortpixel_" .
-                uniqid() .
-                "_" .
-                basename($image_uri);
-
-            if (
-                $this->fileSystem->saveData(
-                    $optimizedImage,
-                    $tempUri,
-                    FileSystemInterface::EXISTS_REPLACE
-                )
-            ) {
-                // Now safely replace the styled image.
-                $this->fileSystem->copy(
-                    $tempUri,
-                    $image_uri,
-                    FileSystemInterface::EXISTS_REPLACE
-                );
-                $this->fileSystem->delete($tempUri);
-
-                $afterPath =
-                    $this->fileSystem->realpath($image_uri) ?: $realPath;
-                $afterSize = @filesize($afterPath) ?: 0;
-
-                $this->logger->notice(
-                    "ShortPixel DONE uri=@uri size_before=@b size_after=@a url=@u",
-                    [
-                        "@uri" => $image_uri,
-                        "@b" => $beforeSize,
-                        "@a" => $afterSize,
-                        "@u" => $downloadUrl,
-                    ]
-                );
-
-                return true;
-            }
-
-            $this->logger->error(
-                "ShortPixel: Failed to save optimized image back to @uri",
-                ["@uri" => $image_uri]
-            );
-        } catch (\Throwable $e) {
-            $this->logger->error(
-                'ShortPixel: Exception while optimizing "@uri": @err',
-                [
-                    "@uri" => $image_uri,
-                    "@err" => $e->getMessage(),
-                ]
-            );
-        }
-
-        return true;
+    // API returns an array with one item per file.
+    if (is_array($result) && isset($result[0]) && is_array($result[0])) {
+      return $result[0];
     }
 
-    /**
-     * Call ShortPixel Post-Reducer API (uploads the file).
-     *
-     * @return array
-     *   First metadata item.
-     */
-    protected function callPostReducer(string $apiKey, string $realPath): array
-    {
-        $fileField = "file1";
+    return is_array($result) ? $result : [];
+  }
 
-        $response = $this->httpClient->request(
-            "POST",
-            "https://api.shortpixel.com/v2/post-reducer.php",
-            [
-                "multipart" => [
-                    [
-                        "name" => "key",
-                        "contents" => $apiKey,
-                    ],
-                    [
-                        "name" => "plugin_version",
-                        "contents" => "DRP01", // max 5 chars
-                    ],
-                    [
-                        "name" => "lossy",
-                        "contents" => (string) $this->getLossyValue(), // 1 lossy, 2 glossy, 0 lossless
-                    ],
-                    [
-                        "name" => "wait",
-                        "contents" => "30",
-                    ],
-                    [
-                        "name" => "convertto",
-                        "contents" => "+avif|+webp",
-                    ],
-                    [
-                        "name" => "refresh",
-                        "contents" => "0",
-                    ],
-                    [
-                        // Must be JSON with double quotes.
-                        "name" => "file_paths",
-                        "contents" => json_encode(
-                            [$fileField => $realPath],
-                            JSON_UNESCAPED_SLASHES
-                        ),
-                    ],
-                    [
-                        "name" => $fileField,
-                        "contents" => fopen($realPath, "rb"),
-                        "filename" => basename($realPath),
-                    ],
-                ],
-                "headers" => [
-                    "Accept" => "application/json",
-                ],
-                "timeout" => 60,
-            ]
-        );
+  /**
+   * Poll reducer.php using the OriginalURL received from post-reducer.
+   *
+   * @return array
+   *   First metadata item.
+   */
+  protected function callReducerByOriginalUrl(string $apiKey, string $originalUrl): array {
+    // ShortPixel examples show urlencoded entries inside urllist.
+    $encoded = rawurlencode($originalUrl);
 
-        $result = json_decode((string) $response->getBody(), true);
+    $payload = [
+      'key' => $apiKey,
+      'plugin_version' => 'DRP01',
+      'lossy' => $this->getLossyValue(),
+      'wait' => 20,
+      'urllist' => [$encoded],
+    ];
 
-        // API returns an array with one item per file.
-        if (is_array($result) && isset($result[0]) && is_array($result[0])) {
-            return $result[0];
-        }
+    $response = $this->httpClient->request('POST', 'https://api.shortpixel.com/v2/reducer.php', [
+      'headers' => [
+        'Accept' => 'application/json',
+      ],
+      'json' => $payload,
+      'timeout' => 60,
+    ]);
 
-        return is_array($result) ? $result : [];
+    $result = json_decode((string) $response->getBody(), TRUE);
+
+    if (is_array($result) && isset($result[0]) && is_array($result[0])) {
+      return $result[0];
     }
 
-    /**
-     * Poll reducer.php using the OriginalURL received from post-reducer.
-     *
-     * @return array
-     *   First metadata item.
-     */
-    protected function callReducerByOriginalUrl(
-        string $apiKey,
-        string $originalUrl
-    ): array {
-        // ShortPixel examples show urlencoded entries inside urllist.
-        $encoded = rawurlencode($originalUrl);
+    return is_array($result) ? $result : [];
+  }
 
-        $payload = [
-            "key" => $apiKey,
-            "plugin_version" => "DRP01",
-            "lossy" => $this->getLossyValue(),
-            "wait" => 20,
-            "urllist" => [$encoded],
-        ];
+  /**
+   * Force Drupal GD JPEG quality globally.
+   */
+  protected function enforceDrupalJpegQuality(int $quality): void {
+    $quality = max(0, min(100, $quality));
+    $config = \Drupal::configFactory()->getEditable('system.image.gd');
 
-        $response = $this->httpClient->request(
-            "POST",
-            "https://api.shortpixel.com/v2/reducer.php",
-            [
-                "headers" => [
-                    "Accept" => "application/json",
-                ],
-                "json" => $payload,
-                "timeout" => 60,
-            ]
-        );
-
-        $result = json_decode((string) $response->getBody(), true);
-
-        if (is_array($result) && isset($result[0]) && is_array($result[0])) {
-            return $result[0];
-        }
-
-        return is_array($result) ? $result : [];
+    if ((int) $config->get('jpeg_quality') !== $quality) {
+      $config->set('jpeg_quality', $quality)->save();
+      $this->logger->notice('ShortPixel: Set Drupal GD JPEG quality to @quality.', [
+        '@quality' => $quality,
+      ]);
     }
+  }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function defaultConfiguration()
-    {
-        return [
-            "api_key" => null,
-            "compression_type" => "glossy",
-        ];
+  /**
+   * {@inheritdoc}
+   */
+  public function defaultConfiguration() {
+    return [
+      'api_key' => NULL,
+      'compression_type' => 'glossy',
+      'force_drupal_jpeg_quality' => TRUE,
+    ];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+    $form['api_key'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('ShortPixel API key'),
+      '#description' => $this->t('Enter your ShortPixel API key. Get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>.'),
+      '#default_value' => $this->configuration['api_key'],
+      '#size' => 32,
+      '#required' => TRUE,
+    ];
+
+    $form['compression_type'] = [
+      '#type' => 'select',
+      '#title' => $this->t('Compression type'),
+      '#description' => $this->t('Choose the image compression level.'),
+      '#options' => [
+        'lossy' => $this->t('Lossy – best balance between speed and quality'),
+        'glossy' => $this->t('Glossy – higher image quality'),
+        'lossless' => $this->t('Lossless – pixel-perfect images'),
+      ],
+      '#default_value' => $this->configuration['compression_type'] ?? 'glossy',
+    ];
+
+    $form['force_drupal_jpeg_quality'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Set Drupal GD2 JPEG quality to 100'),
+      '#description' => $this->t('When enabled, this processor sets the global Drupal setting system.image.gd:jpeg_quality to 100 so derivatives are not pre-compressed at 75 before ShortPixel runs. It\'s highly recommended to avoid visual artefacts.'),
+      '#default_value' => (bool) ($this->configuration['force_drupal_jpeg_quality'] ?? TRUE),
+    ];
+
+    return $form;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
+    parent::submitConfigurationForm($form, $form_state);
+
+    $this->configuration['api_key'] = $form_state->getValue('api_key');
+    $this->configuration['compression_type'] = $form_state->getValue('compression_type');
+    $this->configuration['force_drupal_jpeg_quality'] = (bool) $form_state->getValue('force_drupal_jpeg_quality');
+
+    if ($this->configuration['force_drupal_jpeg_quality']) {
+      $this->enforceDrupalJpegQuality(100);
     }
+  }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function buildConfigurationForm(
-        array $form,
-        FormStateInterface $form_state
-    ) {
-        $form["api_key"] = [
-            "#type" => "textfield",
-            "#title" => $this->t("ShortPixel API key"),
-            "#description" => $this->t(
-                'Enter your ShortPixel API key. Get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>.'
-            ),
-            "#default_value" => $this->configuration["api_key"],
-            "#size" => 32,
-            "#required" => true,
-        ];
-
-        $form["compression_type"] = [
-            "#type" => "select",
-            "#title" => $this->t("Compression type"),
-            "#description" => $this->t("Choose the image compression level."),
-            "#options" => [
-                "lossy" => $this->t(
-                    "Lossy – best balance between speed and quality"
-                ),
-                "glossy" => $this->t("Glossy – higher image quality"),
-                "lossless" => $this->t("Lossless – pixel-perfect images"),
-            ],
-            "#default_value" =>
-                $this->configuration["compression_type"] ?? "glossy",
-        ];
-
-        return $form;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function submitConfigurationForm(
-        array &$form,
-        FormStateInterface $form_state
-    ) {
-        parent::submitConfigurationForm($form, $form_state);
-
-        $this->configuration["api_key"] = $form_state->getValue("api_key");
-        $this->configuration["compression_type"] = $form_state->getValue(
-            "compression_type"
-        );
-    }
 }
