@@ -21,3 +21,6 @@ imageapi_optimize.processor.shortpixel:
           description: 'Pixel-perfect images with minimal size reduction.'
       default: glossy
 
+    force_drupal_jpeg_quality:
+      label: 'Set Drupal GD2 JPEG quality to 100'
+      type: boolean
