@@ -1,7 +1,7 @@
 <?php
 
 /*
- * Hello! This is a demo implementation for ShortPixel's POST-REDUCER API.
+ * This is a demo implementation for ShortPixel's POST-REDUCER API.
  * See more info about POST-REDUCER API at shortpixel.com/api-docs.
  *
  * # What to know?
@@ -364,12 +364,28 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
   }
 
   /**
+   * Force Drupal GD JPEG quality globally.
+   */
+  protected function enforceDrupalJpegQuality(int $quality): void {
+    $quality = max(0, min(100, $quality));
+    $config = \Drupal::configFactory()->getEditable('system.image.gd');
+
+    if ((int) $config->get('jpeg_quality') !== $quality) {
+      $config->set('jpeg_quality', $quality)->save();
+      $this->logger->notice('ShortPixel: Set Drupal GD JPEG quality to @quality.', [
+        '@quality' => $quality,
+      ]);
+    }
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function defaultConfiguration() {
     return [
       'api_key' => NULL,
       'compression_type' => 'glossy',
+      'force_drupal_jpeg_quality' => TRUE,
     ];
   }
 
@@ -398,6 +414,13 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
       '#default_value' => $this->configuration['compression_type'] ?? 'glossy',
     ];
 
+    $form['force_drupal_jpeg_quality'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Set Drupal GD2 JPEG quality to 100'),
+      '#description' => $this->t('When enabled, this processor sets the global Drupal setting system.image.gd:jpeg_quality to 100 so derivatives are not pre-compressed at 75 before ShortPixel runs. It\'s highly recommended to avoid visual artefacts.'),
+      '#default_value' => (bool) ($this->configuration['force_drupal_jpeg_quality'] ?? TRUE),
+    ];
+
     return $form;
   }
 
@@ -409,7 +432,11 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
 
     $this->configuration['api_key'] = $form_state->getValue('api_key');
     $this->configuration['compression_type'] = $form_state->getValue('compression_type');
+    $this->configuration['force_drupal_jpeg_quality'] = (bool) $form_state->getValue('force_drupal_jpeg_quality');
+
+    if ($this->configuration['force_drupal_jpeg_quality']) {
+      $this->enforceDrupalJpegQuality(100);
+    }
   }
 
 }
-
