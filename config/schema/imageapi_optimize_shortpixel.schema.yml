@@ -24,3 +24,27 @@ imageapi_optimize.processor.shortpixel:
     force_drupal_jpeg_quality:
       label: 'Set Drupal GD2 JPEG quality to 100'
       type: boolean
+
+    use_cdn:
+      label: 'Rewrite public image URLs to ShortPixel CDN'
+      type: boolean
+
+    cdn_base_url:
+      label: 'CDN Base URL'
+      type: string
+
+imageapi_optimize_shortpixel.settings:
+  type: config_object
+  label: 'ShortPixel CDN settings'
+  mapping:
+    use_cdn:
+      label: 'Rewrite public image URLs to ShortPixel CDN'
+      type: boolean
+
+    cdn_base_url:
+      label: 'CDN Base URL'
+      type: string
+
+    compression_type:
+      label: 'Compression Type'
+      type: string

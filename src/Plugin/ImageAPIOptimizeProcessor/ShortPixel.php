@@ -130,33 +130,40 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
    * Pick the correct download URL field based on compression_type.
    */
   protected function getDownloadUrlFromMeta(array $meta): string {
-	  $candidates = [
-		  // AVIF (preferat)
-		  $meta['AVIFLossyURL'] ?? '',
-		  $meta['AVIFLosslessURL'] ?? '',
+    $candidates = [
+      // AVIF preferred.
+      $meta['AVIFLossyURL'] ?? '',
+      $meta['AVIFLosslessURL'] ?? '',
 
-		  // WebP fallback
-		  $meta['WebPLossyURL'] ?? '',
-		  $meta['WebPLosslessURL'] ?? '',
+      // WebP fallback.
+      $meta['WebPLossyURL'] ?? '',
+      $meta['WebPLosslessURL'] ?? '',
 
-		  // Original optimized
-		  $meta['LossyURL'] ?? '',
-		  $meta['LosslessURL'] ?? '',
-	  ];
+      // Original optimized format fallback.
+      $meta['LossyURL'] ?? '',
+      $meta['LosslessURL'] ?? '',
+    ];
 
-	  foreach ($candidates as $url) {
-		  if (!empty($url) && $url !== 'NA') {
-			  return (string) $url;
-		  }
-	  }
+    foreach ($candidates as $url) {
+      if (!empty($url) && $url !== 'NA') {
+        return (string) $url;
+      }
+    }
 
-	  return '';
+    return '';
   }
 
   /**
    * {@inheritdoc}
    */
   public function applyToImage($image_uri) {
+    if (!empty($this->configuration['use_cdn'])) {
+      $this->logger->notice('ShortPixel: CDN delivery enabled, skipping Post-Reducer for @uri.', [
+        '@uri' => $image_uri,
+      ]);
+      return TRUE;
+    }
+
     $apiKey = $this->configuration['api_key'] ?? NULL;
 
     if (empty($apiKey)) {
@@ -212,7 +219,7 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
       // 3) Download optimized image (based on configured compression type) and overwrite local file.
       $downloadUrl = $this->getDownloadUrlFromMeta($meta);
       $this->logger->notice('ShortPixel: Selected optimized URL: @url', [
-		      '@url' => $downloadUrl,
+        '@url' => $downloadUrl,
       ]);
       if ($downloadUrl === '' || $downloadUrl === 'NA') {
         $this->logger->error('ShortPixel: Missing optimized URL for selected mode. File: @path Mode: @mode', [
@@ -232,26 +239,26 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
         return TRUE;
       }
 
-	// Write optimized image to a temp file first.
-$tempUri = 'temporary://shortpixel_' . uniqid() . '_' . basename($image_uri);
+      // Write optimized image to a temp file first.
+      $tempUri = 'temporary://shortpixel_' . uniqid() . '_' . basename($image_uri);
 
-if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::EXISTS_REPLACE)) {
-	// Now safely replace the styled image.
-	$this->fileSystem->copy($tempUri, $image_uri, FileSystemInterface::EXISTS_REPLACE);
-	$this->fileSystem->delete($tempUri);
+      if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::EXISTS_REPLACE)) {
+        // Now safely replace the styled image.
+        $this->fileSystem->copy($tempUri, $image_uri, FileSystemInterface::EXISTS_REPLACE);
+        $this->fileSystem->delete($tempUri);
 
-	$afterPath = $this->fileSystem->realpath($image_uri) ?: $realPath;
-	$afterSize = @filesize($afterPath) ?: 0;
+        $afterPath = $this->fileSystem->realpath($image_uri) ?: $realPath;
+        $afterSize = @filesize($afterPath) ?: 0;
 
-	$this->logger->notice('ShortPixel DONE uri=@uri size_before=@b size_after=@a url=@u', [
-			'@uri' => $image_uri,
-			'@b' => $beforeSize,
-			'@a' => $afterSize,
-			'@u' => $downloadUrl,
-	]);
+        $this->logger->notice('ShortPixel DONE uri=@uri size_before=@b size_after=@a url=@u', [
+          '@uri' => $image_uri,
+          '@b' => $beforeSize,
+          '@a' => $afterSize,
+          '@u' => $downloadUrl,
+        ]);
 
-	return TRUE;
-}
+        return TRUE;
+      }
 
 
       $this->logger->error('ShortPixel: Failed to save optimized image back to @uri', ['@uri' => $image_uri]);
@@ -293,10 +300,10 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
           'name' => 'wait',
           'contents' => '30',
         ],
-	[
-	'name' => 'convertto',
-	'contents' => '+avif|+webp',
-	],
+        [
+          'name' => 'convertto',
+          'contents' => '+avif|+webp',
+        ],
         [
           'name' => 'refresh',
           'contents' => '0',
@@ -386,6 +393,8 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
       'api_key' => NULL,
       'compression_type' => 'glossy',
       'force_drupal_jpeg_quality' => TRUE,
+      'use_cdn' => FALSE,
+      'cdn_base_url' => 'https://cdn.shortpixel.ai',
     ];
   }
 
@@ -396,10 +405,15 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
     $form['api_key'] = [
       '#type' => 'textfield',
       '#title' => $this->t('ShortPixel API key'),
-      '#description' => $this->t('Enter your ShortPixel API key. Get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>.'),
+      '#description' => $this->t('Enter your ShortPixel API key. Get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>. This is only required when CDN rewrite is disabled.'),
       '#default_value' => $this->configuration['api_key'],
       '#size' => 32,
-      '#required' => TRUE,
+      '#required' => FALSE,
+      '#states' => [
+        'required' => [
+          ':input[name="data[configuration][use_cdn]"]' => ['checked' => FALSE],
+        ],
+      ],
     ];
 
     $form['compression_type'] = [
@@ -421,7 +435,54 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
       '#default_value' => (bool) ($this->configuration['force_drupal_jpeg_quality'] ?? TRUE),
     ];
 
+    $form['use_cdn'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Rewrite public image URLs to ShortPixel CDN'),
+      '#description' => $this->t('When enabled, this module rewrites public image URLs to ShortPixel Adaptive Images format and skips local Post-Reducer uploads.'),
+      '#default_value' => (bool) ($this->configuration['use_cdn'] ?? FALSE),
+    ];
+
+    $form['cdn_base_url'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('CDN base URL'),
+      '#description' => $this->t('Base CDN host used for rewritten image URLs. Example: <code>https://cdn.shortpixel.ai</code> or <code>https://no-cdn.shortpixel.ai</code>.'),
+      '#default_value' => $this->configuration['cdn_base_url'] ?? 'https://cdn.shortpixel.ai',
+      '#size' => 48,
+      '#states' => [
+        'visible' => [
+          ':input[name="data[configuration][use_cdn]"]' => ['checked' => TRUE],
+        ],
+        'required' => [
+          ':input[name="data[configuration][use_cdn]"]' => ['checked' => TRUE],
+        ],
+      ],
+    ];
+
     return $form;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function validateConfigurationForm(array &$form, FormStateInterface $form_state) {
+    parent::validateConfigurationForm($form, $form_state);
+
+    $useCdn = (bool) $form_state->getValue('use_cdn');
+    $apiKey = trim((string) $form_state->getValue('api_key'));
+    $cdnBaseUrl = trim((string) $form_state->getValue('cdn_base_url'));
+
+    if (!$useCdn && $apiKey === '') {
+      $form_state->setErrorByName('api_key', $this->t('The ShortPixel API key is required when CDN rewrite is disabled.'));
+    }
+
+    if ($useCdn) {
+      if ($cdnBaseUrl === '') {
+        $form_state->setErrorByName('cdn_base_url', $this->t('The CDN base URL is required when CDN rewrite is enabled.'));
+      }
+      elseif (!preg_match('@^https?://@i', $cdnBaseUrl)) {
+        $form_state->setErrorByName('cdn_base_url', $this->t('The CDN base URL must start with http:// or https://.'));
+      }
+    }
   }
 
   /**
@@ -430,9 +491,20 @@ if ($this->fileSystem->saveData($optimizedImage, $tempUri, FileSystemInterface::
   public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
     parent::submitConfigurationForm($form, $form_state);
 
-    $this->configuration['api_key'] = $form_state->getValue('api_key');
+    $this->configuration['api_key'] = trim((string) $form_state->getValue('api_key'));
     $this->configuration['compression_type'] = $form_state->getValue('compression_type');
     $this->configuration['force_drupal_jpeg_quality'] = (bool) $form_state->getValue('force_drupal_jpeg_quality');
+    $this->configuration['use_cdn'] = (bool) $form_state->getValue('use_cdn');
+    $this->configuration['cdn_base_url'] = trim((string) $form_state->getValue('cdn_base_url'));
+    unset($this->configuration['debug_cdn_rewrite']);
+
+    \Drupal::configFactory()
+      ->getEditable('imageapi_optimize_shortpixel.settings')
+      ->set('use_cdn', $this->configuration['use_cdn'])
+      ->set('cdn_base_url', $this->configuration['cdn_base_url'] ?: 'https://cdn.shortpixel.ai')
+      ->clear('debug_cdn_rewrite')
+      ->set('compression_type', $this->configuration['compression_type'])
+      ->save();
 
     if ($this->configuration['force_drupal_jpeg_quality']) {
       $this->enforceDrupalJpegQuality(100);

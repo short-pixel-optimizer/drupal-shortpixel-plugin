@@ -22,6 +22,17 @@ The compression mode can be selected directly from the ImageAPI Optimize process
 
 ---
 
+## CDN Delivery Mode
+
+The processor can also rewrite public image URLs to the ShortPixel Adaptive Images CDN format.
+
+- Enable **Rewrite public image URLs to ShortPixel CDN**
+- Set the **CDN base URL** to `https://cdn.shortpixel.ai`, `https://no-cdn.shortpixel.ai`, or your own CDN host
+- The module rewrites public image URLs to the Adaptive Images API format and keeps the selected compression mode in sync
+- When CDN delivery is enabled, local Post-Reducer uploads are skipped and the CDN handles optimization and format negotiation
+
+---
+
 ## How It Works
 
 1. Drupal generates an image using an Image Style  

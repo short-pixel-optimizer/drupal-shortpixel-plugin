@@ -1,0 +1,3 @@
+use_cdn: false
+cdn_base_url: 'https://cdn.shortpixel.ai'
+compression_type: 'glossy'
