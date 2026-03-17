@@ -402,10 +402,15 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
    * {@inheritdoc}
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+    $form['setup_help'] = [
+      '#type' => 'markup',
+      '#markup' => $this->t('<p><strong>Thank you for using ShortPixel.</strong> If you want the simplest setup, paste your API key and keep the default compression mode on <em>Glossy</em>. If you want faster image delivery, enable <em>Serve images through ShortPixel CDN</em> so your visitors receive images from the ShortPixel server closest to them.</p>'),
+    ];
+
     $form['api_key'] = [
       '#type' => 'textfield',
       '#title' => $this->t('ShortPixel API key'),
-      '#description' => $this->t('Enter your ShortPixel API key. Get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>. This is only required when CDN rewrite is disabled.'),
+      '#description' => $this->t('Paste your ShortPixel API key here. You can get it from <a href="https://shortpixel.com" target="_blank">shortpixel.com</a>. For most websites, this is the standard setup and all you need.'),
       '#default_value' => $this->configuration['api_key'],
       '#size' => 32,
       '#required' => FALSE,
@@ -419,33 +424,33 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
     $form['compression_type'] = [
       '#type' => 'select',
       '#title' => $this->t('Compression type'),
-      '#description' => $this->t('Choose the image compression level.'),
+      '#description' => $this->t('Choose how strongly images should be optimized. If you are not sure, keep <em>Glossy</em>.'),
       '#options' => [
-        'lossy' => $this->t('Lossy – best balance between speed and quality'),
-        'glossy' => $this->t('Glossy – higher image quality'),
-        'lossless' => $this->t('Lossless – pixel-perfect images'),
+        'lossy' => $this->t('Lossy - smallest files, best when page speed matters most'),
+        'glossy' => $this->t('Glossy - recommended for most sites, keeps very good visual quality'),
+        'lossless' => $this->t('Lossless - keeps every pixel, but file sizes stay larger'),
       ],
       '#default_value' => $this->configuration['compression_type'] ?? 'glossy',
     ];
 
     $form['force_drupal_jpeg_quality'] = [
       '#type' => 'checkbox',
-      '#title' => $this->t('Set Drupal GD2 JPEG quality to 100'),
-      '#description' => $this->t('When enabled, this processor sets the global Drupal setting system.image.gd:jpeg_quality to 100 so derivatives are not pre-compressed at 75 before ShortPixel runs. It\'s highly recommended to avoid visual artefacts.'),
+      '#title' => $this->t('Let ShortPixel handle JPEG quality first'),
+      '#description' => $this->t('Recommended. This changes Drupal\'s global JPEG quality setting to 100 so images are not compressed once by Drupal and then again by ShortPixel. That usually helps avoid washed-out or overly compressed results.'),
       '#default_value' => (bool) ($this->configuration['force_drupal_jpeg_quality'] ?? TRUE),
     ];
 
     $form['use_cdn'] = [
       '#type' => 'checkbox',
-      '#title' => $this->t('Rewrite public image URLs to ShortPixel CDN'),
-      '#description' => $this->t('When enabled, this module rewrites public image URLs to ShortPixel Adaptive Images format and skips local Post-Reducer uploads.'),
+      '#title' => $this->t('Serve images through ShortPixel CDN'),
+      '#description' => $this->t('Recommended if you want faster image delivery. With CDN enabled, ShortPixel serves images from the server closest to each visitor, which usually means faster loading times. Your site still generates the image URLs, but ShortPixel handles the final delivery.'),
       '#default_value' => (bool) ($this->configuration['use_cdn'] ?? FALSE),
     ];
 
     $form['cdn_base_url'] = [
       '#type' => 'textfield',
-      '#title' => $this->t('CDN base URL'),
-      '#description' => $this->t('Base CDN host used for rewritten image URLs. Example: <code>https://cdn.shortpixel.ai</code> or <code>https://no-cdn.shortpixel.ai</code>.'),
+      '#title' => $this->t('ShortPixel CDN URL'),
+      '#description' => $this->t('The default value is correct for most sites. Change it only if ShortPixel told you to use a different delivery URL, such as <code>https://no-cdn.shortpixel.ai</code>.'),
       '#default_value' => $this->configuration['cdn_base_url'] ?? 'https://cdn.shortpixel.ai',
       '#size' => 48,
       '#states' => [
@@ -472,15 +477,15 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
     $cdnBaseUrl = trim((string) $form_state->getValue('cdn_base_url'));
 
     if (!$useCdn && $apiKey === '') {
-      $form_state->setErrorByName('api_key', $this->t('The ShortPixel API key is required when CDN rewrite is disabled.'));
+      $form_state->setErrorByName('api_key', $this->t('Enter your ShortPixel API key, or enable CDN delivery if you want ShortPixel to serve images through its CDN instead.'));
     }
 
     if ($useCdn) {
       if ($cdnBaseUrl === '') {
-        $form_state->setErrorByName('cdn_base_url', $this->t('The CDN base URL is required when CDN rewrite is enabled.'));
+        $form_state->setErrorByName('cdn_base_url', $this->t('Enter the ShortPixel CDN URL when CDN delivery is enabled.'));
       }
       elseif (!preg_match('@^https?://@i', $cdnBaseUrl)) {
-        $form_state->setErrorByName('cdn_base_url', $this->t('The CDN base URL must start with http:// or https://.'));
+        $form_state->setErrorByName('cdn_base_url', $this->t('The ShortPixel CDN URL must start with http:// or https://.'));
       }
     }
   }

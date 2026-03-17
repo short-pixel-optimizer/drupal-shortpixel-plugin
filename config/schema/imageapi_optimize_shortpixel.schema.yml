@@ -2,49 +2,49 @@ imageapi_optimize.processor.shortpixel:
   type: mapping
   mapping:
     api_key:
-      label: 'API Key'
+      label: 'ShortPixel API key'
       type: string
 
     compression_type:
-      label: 'Compression Type'
+      label: 'Compression type'
       type: string
-      description: 'Choose the image compression level.'
+      description: 'Choose how strongly images should be optimized. If you are not sure, start with Glossy.'
       allowed_values:
         lossy:
-          label: 'Lossy Compression'
-          description: 'Best for most users. Smallest images with an optimal balance between speed and quality.'
+          label: 'Lossy'
+          description: 'Smallest files. Best when page speed matters more than tiny visual differences.'
         glossy:
-          label: 'Glossy Compression'
-          description: 'Higher visual quality with a slight trade-off in page speed.'
+          label: 'Glossy'
+          description: 'Recommended for most sites. Keeps very good visual quality while still reducing file size.'
         lossless:
-          label: 'Lossless Compression'
-          description: 'Pixel-perfect images with minimal size reduction.'
+          label: 'Lossless'
+          description: 'Keeps every pixel unchanged, but file sizes stay larger.'
       default: glossy
 
     force_drupal_jpeg_quality:
-      label: 'Set Drupal GD2 JPEG quality to 100'
+      label: 'Let ShortPixel handle JPEG quality first'
       type: boolean
 
     use_cdn:
-      label: 'Rewrite public image URLs to ShortPixel CDN'
+      label: 'Serve images through ShortPixel CDN'
       type: boolean
 
     cdn_base_url:
-      label: 'CDN Base URL'
+      label: 'ShortPixel CDN URL'
       type: string
 
 imageapi_optimize_shortpixel.settings:
   type: config_object
-  label: 'ShortPixel CDN settings'
+  label: 'ShortPixel delivery settings'
   mapping:
     use_cdn:
-      label: 'Rewrite public image URLs to ShortPixel CDN'
+      label: 'Serve images through ShortPixel CDN'
       type: boolean
 
     cdn_base_url:
-      label: 'CDN Base URL'
+      label: 'ShortPixel CDN URL'
       type: string
 
     compression_type:
-      label: 'Compression Type'
+      label: 'Compression type'
       type: string
