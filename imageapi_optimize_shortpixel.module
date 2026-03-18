@@ -224,14 +224,23 @@ function imageapi_optimize_shortpixel_build_cdn_url(ImmutableConfig $settings, s
     $compression_type = 'glossy';
   }
 
+  $normalized_original = imageapi_optimize_shortpixel_normalize_original_url_for_cdn($original_url);
+  if ($normalized_original === NULL) {
+    return NULL;
+  }
+
   $client_key = imageapi_optimize_shortpixel_get_client_key();
-  $parameters = implode(',', [
+  $parameters = [
     'to_auto',
     'q_' . $compression_type,
     'ret_wait',
-  ]);
+  ];
 
-  return $cdn_base_url . '/' . $client_key . '/' . $parameters . '/' . $original_url;
+  if ($normalized_original['scheme'] === 'http') {
+    $parameters[] = 'p_h';
+  }
+
+  return $cdn_base_url . '/' . $client_key . '/' . implode(',', $parameters) . '/' . $normalized_original['url'];
 }
 
 /**
@@ -242,4 +251,43 @@ function imageapi_optimize_shortpixel_get_client_key(): string {
   $client_key = strtolower(preg_replace('/[^a-z0-9]/i', '', $uuid) ?? '');
 
   return $client_key !== '' ? substr($client_key, 0, 24) : 'drupalshortpixel';
+}
+
+/**
+ * Removes the scheme from the original asset URL for CDN usage.
+ *
+ * ShortPixel assumes HTTPS when no protocol is present. For HTTP origins we add
+ * the p_h parameter and keep only the host/path/query/fragment portion here.
+ */
+function imageapi_optimize_shortpixel_normalize_original_url_for_cdn(string $original_url): ?array {
+  $parts = parse_url($original_url);
+  if ($parts === FALSE || empty($parts['host'])) {
+    return NULL;
+  }
+
+  $scheme = strtolower((string) ($parts['scheme'] ?? 'https'));
+  if (!in_array($scheme, ['http', 'https'], TRUE)) {
+    return NULL;
+  }
+
+  $normalized_url = $parts['host'];
+
+  if (!empty($parts['port'])) {
+    $normalized_url .= ':' . $parts['port'];
+  }
+
+  $normalized_url .= $parts['path'] ?? '';
+
+  if (isset($parts['query']) && $parts['query'] !== '') {
+    $normalized_url .= '?' . $parts['query'];
+  }
+
+  if (isset($parts['fragment']) && $parts['fragment'] !== '') {
+    $normalized_url .= '#' . $parts['fragment'];
+  }
+
+  return [
+    'scheme' => $scheme,
+    'url' => $normalized_url,
+  ];
 }
