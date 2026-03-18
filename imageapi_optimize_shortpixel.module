@@ -1,0 +1,245 @@
+<?php
+
+use Drupal\Core\Config\ImmutableConfig;
+use Drupal\Core\Site\Settings;
+use Drupal\image\Entity\ImageStyle;
+
+/**
+ * Implements hook_file_url_alter().
+ */
+function imageapi_optimize_shortpixel_file_url_alter(&$uri) {
+  $settings = \Drupal::config('imageapi_optimize_shortpixel.settings');
+  if (!$settings->get('use_cdn')) {
+    return;
+  }
+
+  $public_uri = imageapi_optimize_shortpixel_normalize_supported_public_image_uri($uri);
+  if ($public_uri === NULL) {
+    return;
+  }
+
+  imageapi_optimize_shortpixel_prepare_derivative_if_needed($public_uri);
+
+  $original_url = imageapi_optimize_shortpixel_get_absolute_public_url($public_uri);
+  if ($original_url === NULL) {
+    return;
+  }
+
+  $cdn_url = imageapi_optimize_shortpixel_build_cdn_url($settings, $original_url);
+  if ($cdn_url !== NULL) {
+    $uri = $cdn_url;
+  }
+}
+
+/**
+ * Normalizes a supported public image reference to a public:// URI.
+ */
+function imageapi_optimize_shortpixel_normalize_supported_public_image_uri(string $uri): ?string {
+  if (str_starts_with($uri, 'public://')) {
+    return imageapi_optimize_shortpixel_is_supported_public_image_uri($uri) ? $uri : NULL;
+  }
+
+  $public_uri = imageapi_optimize_shortpixel_convert_public_url_to_uri($uri);
+  if ($public_uri === NULL) {
+    return NULL;
+  }
+
+  return imageapi_optimize_shortpixel_is_supported_public_image_uri($public_uri) ? $public_uri : NULL;
+}
+
+/**
+ * Determines whether the URI can be rewritten to the CDN.
+ */
+function imageapi_optimize_shortpixel_is_supported_public_image_uri(string $uri): bool {
+  if (!str_starts_with($uri, 'public://')) {
+    return FALSE;
+  }
+
+  $target = preg_replace('@^[a-z0-9_]+://@i', '', $uri);
+  $path = strtok($target, '?') ?: $target;
+  $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+
+  return in_array($extension, [
+    'avif',
+    'bmp',
+    'heic',
+    'heif',
+    'gif',
+    'ico',
+    'jpeg',
+    'jpg',
+    'png',
+    'svg',
+    'tif',
+    'tiff',
+    'webp',
+  ], TRUE);
+}
+
+/**
+ * Converts a public files URL or path back into a public:// URI.
+ */
+function imageapi_optimize_shortpixel_convert_public_url_to_uri(string $uri): ?string {
+  $parts = parse_url($uri);
+  if ($parts === FALSE) {
+    return NULL;
+  }
+
+  if (!empty($parts['scheme']) && !in_array(strtolower($parts['scheme']), ['http', 'https'], TRUE)) {
+    return NULL;
+  }
+
+  $path = $parts['path'] ?? '';
+  if ($path === '') {
+    return NULL;
+  }
+
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  if (!empty($parts['host']) && $request && strcasecmp($parts['host'], $request->getHost()) !== 0) {
+    return NULL;
+  }
+
+  $public_path = trim((string) Settings::get('file_public_path', 'sites/default/files'), '/');
+  if ($public_path === '') {
+    return NULL;
+  }
+
+  $prefixes = ['/' . $public_path];
+  if ($request) {
+    $base_path = trim($request->getBasePath(), '/');
+    if ($base_path !== '') {
+      $prefixes[] = '/' . $base_path . '/' . $public_path;
+    }
+  }
+
+  foreach (array_unique($prefixes) as $prefix) {
+    if ($path === $prefix) {
+      return 'public://';
+    }
+
+    if (str_starts_with($path, $prefix . '/')) {
+      return 'public://' . ltrim(substr($path, strlen($prefix)), '/');
+    }
+  }
+
+  return NULL;
+}
+
+/**
+ * Ensures a style derivative exists before the URL is rewritten to the CDN.
+ */
+function imageapi_optimize_shortpixel_prepare_derivative_if_needed(string $uri): void {
+  $derivative = imageapi_optimize_shortpixel_parse_derivative_uri($uri);
+  if ($derivative === NULL) {
+    return;
+  }
+
+  $file_system = \Drupal::service('file_system');
+  $derivative_path = $file_system->realpath($uri);
+  if ($derivative_path && is_file($derivative_path)) {
+    return;
+  }
+
+  $original_uri = $derivative['source_scheme'] . '://' . $derivative['source_target'];
+  $original_path = $file_system->realpath($original_uri);
+  if (!$original_path || !is_file($original_path)) {
+    return;
+  }
+
+  $style = ImageStyle::load($derivative['style_name']);
+  if (!$style) {
+    return;
+  }
+
+  try {
+    $style->createDerivative($original_uri, $uri);
+  }
+  catch (\Throwable $e) {
+    \Drupal::logger('imageapi_optimize_shortpixel')->warning('Failed to prepare derivative @uri before CDN rewrite: @message', [
+      '@uri' => $uri,
+      '@message' => $e->getMessage(),
+    ]);
+  }
+}
+
+/**
+ * Parses a Drupal image style derivative URI.
+ */
+function imageapi_optimize_shortpixel_parse_derivative_uri(string $uri): ?array {
+  $matches = [];
+  if (!preg_match('@^(?P<scheme>[a-z0-9_]+)://styles/(?P<style_name>[^/]+)/(?P<source_scheme>[^/]+)/(?P<source_target>.+)$@i', $uri, $matches)) {
+    return NULL;
+  }
+
+  return [
+    'scheme' => $matches['scheme'],
+    'style_name' => $matches['style_name'],
+    'source_scheme' => $matches['source_scheme'],
+    'source_target' => $matches['source_target'],
+  ];
+}
+
+/**
+ * Converts a public stream wrapper URI into an absolute URL without recursion.
+ */
+function imageapi_optimize_shortpixel_get_absolute_public_url(string $uri): ?string {
+  $wrapper = \Drupal::service('stream_wrapper_manager')->getViaUri($uri);
+  if (!$wrapper) {
+    return NULL;
+  }
+
+  $external_url = $wrapper->getExternalUrl();
+  if ($external_url === '' || $external_url === FALSE) {
+    return NULL;
+  }
+
+  if (preg_match('@^https?://@i', $external_url)) {
+    return $external_url;
+  }
+
+  $request = \Drupal::requestStack()->getCurrentRequest();
+  if (!$request) {
+    return NULL;
+  }
+
+  if (str_starts_with($external_url, '//')) {
+    return $request->getScheme() . ':' . $external_url;
+  }
+
+  $path = str_starts_with($external_url, '/') ? $external_url : '/' . ltrim($external_url, '/');
+  return $request->getSchemeAndHttpHost() . $path;
+}
+
+/**
+ * Builds the Adaptive Images CDN URL for the given original asset.
+ */
+function imageapi_optimize_shortpixel_build_cdn_url(ImmutableConfig $settings, string $original_url): ?string {
+  $cdn_base_url = rtrim(trim((string) $settings->get('cdn_base_url')), '/');
+  if ($cdn_base_url === '') {
+    return NULL;
+  }
+
+  $compression_type = (string) $settings->get('compression_type');
+  if (!in_array($compression_type, ['lossy', 'glossy', 'lossless'], TRUE)) {
+    $compression_type = 'glossy';
+  }
+
+  $client_key = imageapi_optimize_shortpixel_get_client_key();
+  $parameters = implode(',', [
+    'to_auto',
+    'q_' . $compression_type,
+    'ret_wait',
+  ]);
+
+  return $cdn_base_url . '/' . $client_key . '/' . $parameters . '/' . $original_url;
+}
+
+/**
+ * Returns an alphanumeric CDN client key derived from the Drupal site UUID.
+ */
+function imageapi_optimize_shortpixel_get_client_key(): string {
+  $uuid = (string) \Drupal::config('system.site')->get('uuid');
+  $client_key = strtolower(preg_replace('/[^a-z0-9]/i', '', $uuid) ?? '');
+
+  return $client_key !== '' ? substr($client_key, 0, 24) : 'drupalshortpixel';
+}
