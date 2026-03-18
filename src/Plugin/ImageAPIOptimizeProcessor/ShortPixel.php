@@ -450,7 +450,7 @@ class ShortPixel extends ConfigurableImageAPIOptimizeProcessorBase {
     $form['cdn_base_url'] = [
       '#type' => 'textfield',
       '#title' => $this->t('ShortPixel CDN URL'),
-      '#description' => $this->t('The default value is correct for most sites. Change it only if ShortPixel told you to use a different delivery URL, such as <code>https://no-cdn.shortpixel.ai</code>.'),
+      '#description' => $this->t('The default value is correct for most sites. Change this only if you want to use <a href="https://shortpixel.com/knowledge-base/article/can-i-use-a-different-cdn-with-shortpixel-adaptive-images/">your own CDN</a> or if you want to <a href="https://shortpixel.com/knowledge-base/article/how-to-serve-the-images-from-a-custom-domain/">set up your custom domain</a>.'),
       '#default_value' => $this->configuration['cdn_base_url'] ?? 'https://cdn.shortpixel.ai',
       '#size' => 48,
       '#states' => [
