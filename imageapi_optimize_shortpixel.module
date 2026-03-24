@@ -229,7 +229,8 @@ function imageapi_optimize_shortpixel_build_cdn_url(ImmutableConfig $settings, s
     return NULL;
   }
 
-  $client_key = imageapi_optimize_shortpixel_get_client_key();
+  //$client_key = imageapi_optimize_shortpixel_get_client_key();
+  $client_key = 'drupal';
   $parameters = [
     'to_auto',
     'q_' . $compression_type,
